@@ -1,0 +1,13 @@
+{
+  "name": "jeu-de-cartes-defense",
+  "version": "1.0.0",
+  "description": "Jeu de cartes en ligne à 2 joueurs (attaque / défense)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

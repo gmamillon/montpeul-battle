@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bastion – jeu de cartes</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app"></div>
+  <dialog id="rules">
+    <h2>Règles (2 joueurs)</h2>
+    <h3>Mise en place</h3>
+    <ul>
+      <li>Jeu de 52 cartes. Chaque joueur reçoit 6 cartes, pose <b>4 cartes face cachée</b> (sa défense) et garde 2 cartes en main.</li>
+      <li>Chacun retourne ensuite <b>2 de ses 4 cartes</b> de défense.</li>
+      <li>Chaque joueur pioche une carte : la plus haute commence (égalité : on repioche). Ces cartes sont défaussées.</li>
+    </ul>
+    <h3>Valeurs</h3>
+    <ul>
+      <li>2 à 10 : leur nombre — Valet, Dame, Roi : 10 — As : 11.</li>
+      <li><span class="r">Rouges (♥ ♦)</span> : <b>×2 en défense</b>. <span class="b">Noires (♠ ♣)</span> : <b>×2 en attaque</b>.</li>
+      <li>Ex. : 8♦ = 16 en défense / 8 en attaque ; 8♠ = 16 en attaque / 8 en défense.</li>
+    </ul>
+    <h3>Un tour</h3>
+    <ul>
+      <li>Vous devez jouer <b>au moins une carte</b> de votre main, puis vous piochez pour revenir à 2 cartes.</li>
+      <li><b>Renforcer</b> : ajoutez des cartes face cachée à votre défense (4 maximum). À faire avant d'attaquer.</li>
+      <li><b>Attaquer</b> : choisissez 1 ou 2 cartes de votre main et les cartes adverses visées (révélées). Si la somme d'attaque est <b>supérieure ou égale</b> à la somme de défense des cibles, elles sont détruites. Sinon elles restent (mais restent révélées). Les cartes d'attaque sont défaussées dans tous les cas. Chaque carte d'attaque peut viser <b>2 cartes au maximum</b> : pour en viser 3 ou 4, il faut attaquer avec vos deux cartes. Une attaque termine votre tour.</li>
+      <li>Le tour se termine <b>automatiquement</b> quand les deux cartes de votre main ont été jouées (en attaque ou en défense).</li>
+    </ul>
+    <h3>Victoire</h3>
+    <p>Détruisez toutes les cartes de la défense adverse.</p>
+    <form method="dialog"><button class="btn primary">Compris</button></form>
+  </dialog>
+  <script src="client.js"></script>
+</body>
+</html>
