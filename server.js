@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const { Game } = require('./game');
+const { Game, MODES } = require('./game');
 const { botMove, botNeedsToAct } = require('./bot');
 
 const PUBLIC = path.join(__dirname, 'public');
@@ -32,7 +32,8 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server, maxPayload: 4096 });
-const rooms = new Map(); // code -> room
+// code -> room. room.seats : un élément par joueur, dans l'ordre des tours.
+const rooms = new Map();
 
 const send = (ws, obj) => ws && ws.readyState === 1 && ws.send(JSON.stringify(obj));
 const cleanName = (n, fallback) => String(n || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 16) || fallback;
@@ -46,20 +47,40 @@ function newCode() {
   }
 }
 
+const newHuman = (name) => ({ token: crypto.randomBytes(12).toString('hex'), name, ws: null, bot: false, left: false, rematch: false });
+
+function newBot(room) {
+  let name = 'Ordinateur';
+  if (room.mode !== 'duel') {
+    let k = 1;
+    while (room.seats.some((s) => s.name === `Ordi ${k}`)) k++;
+    name = `Ordi ${k}`;
+  }
+  return { token: null, name, ws: null, bot: true, left: false, rematch: false };
+}
+
+// L'hôte est le premier humain encore présent.
+const hostOf = (room) => room.seats.find((s) => !s.bot && !s.left);
+
 function broadcast(room) {
   room.lastActive = Date.now();
+  const host = hostOf(room);
   room.seats.forEach((s, i) => {
-    if (!s || !s.ws) return;
+    if (!s.ws) return;
     send(s.ws, {
       t: 'state',
       room: {
         code: room.code,
+        mode: room.mode,
         seat: i,
-        names: room.seats.map((x, k) => (x ? x.name : `Joueur ${k + 1}`)),
-        connected: room.seats.map((x) => !!x && (x.bot || !!x.ws)),
-        started: !!room.game,
-        rematch: room.rematch,
-        vsBot: room.seats.some((x) => x && x.bot),
+        isHost: s === host,
+        minPlayers: MODES[room.mode].minPlayers,
+        maxPlayers: MODES[room.mode].maxPlayers,
+        names: room.seats.map((x) => x.name),
+        bots: room.seats.map((x) => x.bot),
+        left: room.seats.map((x) => x.left),
+        connected: room.seats.map((x) => x.bot || !!x.ws),
+        rematch: room.seats.map((x) => x.rematch),
       },
       game: room.game ? room.game.view(i) : null,
     });
@@ -67,8 +88,15 @@ function broadcast(room) {
 }
 
 function startGame(room) {
-  room.game = new Game(room.seats.map((s) => s.name));
-  room.rematch = [false, false];
+  clearTimeout(room.botTimer);
+  room.botTimer = null;
+  room.seats = room.seats.filter((s) => !s.left);
+  room.seats.forEach((s) => (s.rematch = false));
+  // Plus assez de joueurs : retour au salon d'attente.
+  room.game =
+    room.seats.length >= MODES[room.mode].minPlayers
+      ? new Game(room.seats.map((s) => s.name), { mode: room.mode })
+      : null;
   broadcast(room);
   scheduleBot(room);
 }
@@ -76,11 +104,12 @@ function startGame(room) {
 function scheduleBot(room) {
   const g = room.game;
   if (!g || room.botTimer || g.phase === 'over') return;
-  const seat = room.seats.findIndex((s) => s && s.bot);
-  if (seat < 0 || !botNeedsToAct(g, seat)) return;
+  const seat = room.seats.findIndex((s, i) => s.bot && botNeedsToAct(g, i));
+  if (seat < 0) return;
   room.botTimer = setTimeout(() => {
     room.botTimer = null;
-    if (room.game !== g || g.phase === 'over' || !botNeedsToAct(g, seat)) return;
+    if (room.game !== g) return;
+    if (!botNeedsToAct(g, seat)) return scheduleBot(room);
     const mv = botMove(g.view(seat));
     const r = g.act(seat, mv);
     if (r.error) {
@@ -89,17 +118,67 @@ function scheduleBot(room) {
     }
     broadcast(room);
     scheduleBot(room);
-  }, g.phase === 'play' ? 1400 : 700);
+  }, g.phase === 'play' ? 1400 : 400);
 }
 
-function attach(room, seat, ws) {
-  const s = room.seats[seat];
-  if (s.ws && s.ws !== ws) {
-    s.ws.ctx = null;
-    s.ws.close();
+function closeRoom(room, leaver) {
+  clearTimeout(room.botTimer);
+  rooms.delete(room.code);
+  for (const s of room.seats) {
+    if (s !== leaver && s.ws) {
+      s.ws.ctx = null;
+      send(s.ws, { t: 'closed', msg: `${leaver.name} a quitté la partie.` });
+    }
   }
-  s.ws = ws;
-  ws.ctx = { room, seat };
+}
+
+// Relance la partie quand tous les humains présents l'ont demandé.
+function maybeRematch(room) {
+  const humans = room.seats.filter((s) => !s.bot && !s.left);
+  if (humans.every((s) => s.rematch)) startGame(room);
+  else broadcast(room);
+}
+
+function leaveRoom(room, player) {
+  // Duel : la partie n'a plus de sens sans l'un des deux joueurs.
+  if (room.mode === 'duel') return closeRoom(room, player);
+  if (!room.game) {
+    if (player === hostOf(room)) return closeRoom(room, player);
+    room.seats.splice(room.seats.indexOf(player), 1);
+    return broadcast(room);
+  }
+  // Mêlée en cours : le joueur abandonne et les autres continuent.
+  const seat = room.seats.indexOf(player);
+  Object.assign(player, { left: true, token: null, ws: null, rematch: false });
+  if (!room.seats.some((s) => !s.bot && !s.left)) {
+    clearTimeout(room.botTimer);
+    rooms.delete(room.code);
+    return;
+  }
+  if (room.game.phase === 'over') return maybeRematch(room);
+  room.game.forfeit(seat);
+  broadcast(room);
+  scheduleBot(room);
+}
+
+function attach(room, player, ws) {
+  if (player.ws && player.ws !== ws) {
+    player.ws.ctx = null;
+    player.ws.close();
+  }
+  player.ws = ws;
+  ws.ctx = { room, player };
+}
+
+function createRoom(ws, m) {
+  const mode = Object.hasOwn(MODES, m.mode) ? m.mode : 'duel';
+  const room = { code: newCode(), mode, seats: [], game: null, botTimer: null, lastActive: Date.now() };
+  const player = newHuman(cleanName(m.name, 'Joueur 1'));
+  room.seats.push(player);
+  rooms.set(room.code, room);
+  attach(room, player, ws);
+  send(ws, { t: 'joined', code: room.code, token: player.token });
+  return room;
 }
 
 wss.on('connection', (ws) => {
@@ -120,26 +199,17 @@ wss.on('connection', (ws) => {
     switch (m.t) {
       case 'create': {
         if (ctx) return;
-        const room = { code: newCode(), seats: [null, null], game: null, rematch: [false, false], botTimer: null, lastActive: Date.now() };
-        const token = crypto.randomBytes(12).toString('hex');
-        room.seats[0] = { token, name: cleanName(m.name, 'Joueur 1'), ws: null, bot: false };
-        rooms.set(room.code, room);
-        attach(room, 0, ws);
-        send(ws, { t: 'joined', code: room.code, token });
-        broadcast(room);
+        broadcast(createRoom(ws, m));
         break;
       }
 
       case 'vsbot': {
         if (ctx) return;
-        const room = { code: newCode(), seats: [null, null], game: null, rematch: [false, false], botTimer: null, lastActive: Date.now() };
-        const token = crypto.randomBytes(12).toString('hex');
-        room.seats[0] = { token, name: cleanName(m.name, 'Joueur 1'), ws: null, bot: false };
-        room.seats[1] = { token: null, name: 'Ordinateur', ws: null, bot: true };
-        rooms.set(room.code, room);
-        attach(room, 0, ws);
-        send(ws, { t: 'joined', code: room.code, token });
-        startGame(room);
+        const room = createRoom(ws, m);
+        room.seats.push(newBot(room));
+        // En duel on joue tout de suite ; en mêlée on peut d'abord ajouter d'autres ordinateurs.
+        if (room.mode === 'duel') startGame(room);
+        else broadcast(room);
         break;
       }
 
@@ -147,21 +217,41 @@ wss.on('connection', (ws) => {
         if (ctx) return;
         const room = rooms.get(String(m.code || '').trim().toUpperCase());
         if (!room) return send(ws, { t: 'error', msg: 'Salon introuvable. Vérifiez le code.' });
-        if (room.seats[1]) return send(ws, { t: 'error', msg: 'Ce salon est déjà complet.' });
-        const token = crypto.randomBytes(12).toString('hex');
-        room.seats[1] = { token, name: cleanName(m.name, 'Joueur 2'), ws: null, bot: false };
-        attach(room, 1, ws);
-        send(ws, { t: 'joined', code: room.code, token });
-        startGame(room);
+        if (room.seats.length >= MODES[room.mode].maxPlayers) return send(ws, { t: 'error', msg: 'Ce salon est déjà complet.' });
+        if (room.game) return send(ws, { t: 'error', msg: 'La partie a déjà commencé.' });
+        const player = newHuman(cleanName(m.name, `Joueur ${room.seats.length + 1}`));
+        room.seats.push(player);
+        attach(room, player, ws);
+        send(ws, { t: 'joined', code: room.code, token: player.token });
+        if (room.mode === 'duel') startGame(room);
+        else broadcast(room);
+        break;
+      }
+
+      // Salon d'attente de la mêlée (réservé à l'hôte).
+      case 'addbot':
+      case 'removebot':
+      case 'start': {
+        if (!ctx || ctx.room.game || ctx.room.mode === 'duel') return;
+        const { room, player } = ctx;
+        if (player !== hostOf(room)) return;
+        const { minPlayers, maxPlayers } = MODES[room.mode];
+        if (m.t === 'start') {
+          if (room.seats.length >= minPlayers) startGame(room);
+          return;
+        }
+        if (m.t === 'addbot' && room.seats.length < maxPlayers) room.seats.push(newBot(room));
+        if (m.t === 'removebot' && room.seats[m.seat]?.bot) room.seats.splice(m.seat, 1);
+        broadcast(room);
         break;
       }
 
       case 'resume': {
         if (ctx) return;
         const room = rooms.get(String(m.code || '').toUpperCase());
-        const seat = room ? room.seats.findIndex((s) => s && !s.bot && s.token === m.token) : -1;
-        if (seat < 0) return send(ws, { t: 'resume_failed' });
-        attach(room, seat, ws);
+        const player = room && typeof m.token === 'string' ? room.seats.find((s) => !s.bot && s.token === m.token) : null;
+        if (!player) return send(ws, { t: 'resume_failed' });
+        attach(room, player, ws);
         send(ws, { t: 'joined', code: room.code, token: m.token });
         broadcast(room);
         break;
@@ -169,35 +259,25 @@ wss.on('connection', (ws) => {
 
       case 'act': {
         if (!ctx || !ctx.room.game) return;
-        const r = ctx.room.game.act(ctx.seat, m.a);
+        const { room, player } = ctx;
+        const r = room.game.act(room.seats.indexOf(player), m.a);
         if (r.error) return send(ws, { t: 'error', msg: r.error });
-        broadcast(ctx.room);
-        scheduleBot(ctx.room);
+        broadcast(room);
+        scheduleBot(room);
         break;
       }
 
       case 'rematch': {
         if (!ctx || !ctx.room.game || ctx.room.game.phase !== 'over') return;
-        const room = ctx.room;
-        room.rematch[ctx.seat] = true;
-        room.seats.forEach((s, i) => s && s.bot && (room.rematch[i] = true));
-        if (room.rematch[0] && room.rematch[1]) startGame(room);
-        else broadcast(room);
+        ctx.player.rematch = true;
+        maybeRematch(ctx.room);
         break;
       }
 
       case 'leave': {
         if (!ctx) return;
-        const { room, seat } = ctx;
         ws.ctx = null;
-        clearTimeout(room.botTimer);
-        rooms.delete(room.code);
-        room.seats.forEach((s, i) => {
-          if (s && i !== seat && s.ws) {
-            s.ws.ctx = null;
-            send(s.ws, { t: 'closed', msg: `${room.seats[seat].name} a quitté la partie.` });
-          }
-        });
+        leaveRoom(ctx.room, ctx.player);
         send(ws, { t: 'closed' });
         break;
       }
@@ -207,9 +287,8 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     const ctx = ws.ctx;
     if (!ctx) return;
-    const s = ctx.room.seats[ctx.seat];
-    if (s && s.ws === ws) {
-      s.ws = null;
+    if (ctx.player.ws === ws) {
+      ctx.player.ws = null;
       broadcast(ctx.room);
     }
   });
@@ -224,7 +303,7 @@ setInterval(() => {
   });
   const now = Date.now();
   for (const [code, room] of rooms) {
-    const anyone = room.seats.some((s) => s && s.ws);
+    const anyone = room.seats.some((s) => s.ws);
     if (!anyone && now - room.lastActive > 2 * 3600 * 1000) {
       clearTimeout(room.botTimer);
       rooms.delete(code);

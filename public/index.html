@@ -9,7 +9,7 @@
 <body>
   <div id="app"></div>
   <dialog id="rules">
-    <h2>Règles (2 joueurs)</h2>
+    <h2>Règles — Duel (2 joueurs)</h2>
     <h3>Mise en place</h3>
     <ul>
       <li>Jeu de 52 cartes. Chaque joueur reçoit 6 cartes, pose <b>4 cartes face cachée</b> (sa défense) et garde 2 cartes en main.</li>
@@ -31,6 +31,22 @@
     </ul>
     <h3>Victoire</h3>
     <p>Détruisez toutes les cartes de la défense adverse.</p>
+
+    <h2 class="next">Mode Mêlée (2 à 5 joueurs)</h2>
+    <p>Les règles du duel s'appliquent, avec ces différences :</p>
+    <ul>
+      <li>On joue avec <b>autant de jeux de 52 cartes que de joueurs</b>, mélangés dans une seule pioche.</li>
+      <li>Chacun reçoit <b>7 cartes</b>, en pose <b>5 face cachée</b> sur son banc, puis en révèle 2. Le banc contient <b>5 cartes au maximum</b>.</li>
+      <li>La <b>plus petite somme de défense révélée</b> commence (égalité : tirage au sort), puis on tourne dans le sens des aiguilles d'une montre.</li>
+      <li>Chaque attaque vise <b>un seul adversaire</b>, au choix.</li>
+      <li>Un joueur dont le banc est vide est <b>éliminé</b>.</li>
+      <li>La défausse n'est <b>jamais remélangée</b>.</li>
+    </ul>
+    <h3>Victoire en mêlée</h3>
+    <ul>
+      <li>Être le <b>dernier joueur</b> avec au moins une carte en défense ;</li>
+      <li>ou, dès que la <b>pioche est vide</b>, avoir la plus grosse somme de défense sur son banc (toutes les cartes sont révélées ; égalité : victoire partagée).</li>
+    </ul>
     <form method="dialog"><button class="btn primary">Compris</button></form>
   </dialog>
   <script src="client.js"></script>
